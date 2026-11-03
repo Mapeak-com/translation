@@ -21,6 +21,13 @@ RUN git clone --recursive https://github.com/LibreTranslate/LTEngine /build \
     && cd /build \
     && git checkout "${LTENGINE_REF}"
 
+# Local fixes on top of LTEngine. git apply fails the build if a bump of LTENGINE_REF moves the
+# code a patch touches, rather than silently building without it.
+#   threads.patch - llama.cpp defaults to 4 threads whatever the machine has; use all cores, or
+#                   LTENGINE_THREADS when set.
+COPY patches/ /patches/
+RUN cd /build && git apply /patches/*.patch
+
 WORKDIR /build
 RUN cargo build --locked --release -p ltengine \
     && install -Dm755 -s target/release/ltengine /out/ltengine

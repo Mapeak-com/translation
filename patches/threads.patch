@@ -1,0 +1,52 @@
+diff --git a/ltengine/src/llm.rs b/ltengine/src/llm.rs
+index 4f55090..36d5e67 100644
+--- a/ltengine/src/llm.rs
++++ b/ltengine/src/llm.rs
+@@ -68,11 +68,21 @@ fn pick_n_ubatch(use_gpu: bool) -> u32 {
+     default
+ }
+ 
++/// llama.cpp defaults to 4 threads whatever the machine has. Use all of them, unless
++/// LTENGINE_THREADS says otherwise.
++fn pick_n_threads() -> i32 {
++    std::env::var("LTENGINE_THREADS").ok()
++        .and_then(|v| v.trim().parse::<i32>().ok())
++        .filter(|n| *n > 0)
++        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get() as i32).unwrap_or(4))
++}
++
+ pub struct LLM {
+     backend: LlamaBackend,
+     model: LlamaModel,
+     prompt_lock: Mutex<()>,
+     n_ubatch: u32,
++    n_threads: i32,
+ }
+ 
+ pub struct LLMContext<'a>{
+@@ -160,18 +170,19 @@ impl LLM {
+             (true, Some(n)) => eprintln!("ltengine: {}/{} model layers on GPU, rest on CPU", n, model.n_layer()),
+         }
+ 
+-        Ok(LLM { backend, model, prompt_lock: Mutex::new(()), n_ubatch })
++        let n_threads = pick_n_threads();
++        eprintln!("ltengine: using {} threads", n_threads);
++
++        Ok(LLM { backend, model, prompt_lock: Mutex::new(()), n_ubatch, n_threads })
+     }
+ 
+     pub fn create_context(&self, ctx_size: i32) -> Result<LLMContext<'_>>{
+         let ctx_params =
+             LlamaContextParams::default()
+                 .with_n_ctx(Some(NonZeroU32::new(ctx_size as u32).unwrap()))
+-                .with_n_ubatch(self.n_ubatch);
+-
+-        // Use all threads
+-        // ctx_params = ctx_params.with_n_threads(threads);
+-        // ctx_params = ctx_params.with_n_threads_batch(threads_batch);
++                .with_n_ubatch(self.n_ubatch)
++                .with_n_threads(self.n_threads)
++                .with_n_threads_batch(self.n_threads);
+ 
+         let ctx = self.model
+             .new_context(&self.backend, ctx_params)
