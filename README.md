@@ -67,7 +67,7 @@ Create the key in the Google Cloud console under **APIs & Services → Credentia
 - `nginx.conf` is the caching front described above.
 - `entrypoint.sh` runs the adapter and `nginx` on `5050`, the only port exposed. It exits if either dies, so a restart policy sees the failure.
 - `Dockerfile` is Debian slim with nginx and python3, and builds in seconds.
-- `.github/workflows/test.yml` builds the image, translates a sentence through the real Google API, and checks that the same request comes back as a cache `HIT`. It needs a `GOOGLE_API_KEY` repository secret.
+- `.github/workflows/test.yml` is a smoke test that needs no real key: it builds the image, checks the container starts and nginx reaches the adapter, and that a failed translation comes back as a LibreTranslate-style error that is not cached.
 - `.github/workflows/docker-publish.yml` publishes `ghcr.io/mapeak-com/translation:latest` for `linux/amd64` on every push to `main`.
 
 ## Switching to Google's Translation LLM

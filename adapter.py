@@ -111,6 +111,12 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"error": "Not found"})
 
+    def do_HEAD(self):
+        # Health checkers such as wait-on probe with HEAD.
+        self.send_response(200 if self.path_only() == "/health" else 404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         path = self.path_only()
         if path != "/translate":

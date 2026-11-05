@@ -16,26 +16,31 @@ jobs:
     - name: Build the image
       run: docker build . -t mapeak/translation
 
-    - name: Run the image and check it translates
+    - name: Run the image and check it is wired up
       run: |
-        # Calls the real Google API, so the GOOGLE_API_KEY repository secret has to be set.
-        docker run -d --rm --name translation -p 5050:5050 -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" mapeak/translation
+        # No real key on purpose: Google is trusted to translate. This checks the container starts,
+        # nginx reaches the adapter, and a failed translation comes back in LibreTranslate's error
+        # format without being cached.
+        docker run -d --name translation -p 5050:5050 -e GOOGLE_API_KEY=invalid mapeak/translation
         npx wait-on -t 60000 http://localhost:5050/health
 
-        translated=$(curl -fsS -X POST http://localhost:5050/translate \
-          -H 'Content-Type: application/json' \
-          -d '{"q":"Hola mundo","source":"auto","target":"en","format":"text"}' \
-          | python3 -c 'import json,sys; print(json.load(sys.stdin)["translatedText"])')
-        echo "translated: $translated"
-        test -n "$translated"
+        request() {
+          curl -sS -o body.json -D headers.txt -w '%{http_code}' -X POST http://localhost:5050/translate \
+            -H 'Content-Type: application/json' \
+            -d '{"q":"Hola mundo","source":"auto","target":"en","format":"text"}'
+        }
 
-        # The same request a second time has to come back from the cache, which is the whole point
-        # of putting nginx in this image.
-        cache_status=$(curl -fsS -o /dev/null -D - -X POST http://localhost:5050/translate \
-          -H 'Content-Type: application/json' \
-          -d '{"q":"Hola mundo","source":"auto","target":"en","format":"text"}' \
-          | grep -i '^x-translation-cache:' | tr -d '\r' | awk '{print $2}')
+        status=$(request)
+        echo "status: $status"; cat body.json; echo
+        test "$status" = "400"
+        python3 -c 'import json; assert "error" in json.load(open("body.json"))'
+
+        # Errors must never be cached, or one bad response would be served for a year.
+        request > /dev/null
+        cache_status=$(grep -i '^x-translation-cache:' headers.txt | tr -d '\r' | awk '{print $2}')
         echo "cache status: $cache_status"
-        test "$cache_status" = "HIT"
+        test "$cache_status" = "MISS"
 
-        docker stop translation
+    - name: Show container logs
+      if: always()
+      run: docker logs translation || true
