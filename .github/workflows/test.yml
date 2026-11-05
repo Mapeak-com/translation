@@ -18,10 +18,9 @@ jobs:
 
     - name: Run the image and check it translates
       run: |
-        # gemma3-1b is far too poor to serve, but it is a ~800 MB download rather than 7 GB, which
-        # keeps the smoke test to a couple of minutes. It exercises the same nginx and entrypoint.
-        docker run -d --rm --name translation -p 5050:5050 -e LTENGINE_MODEL=gemma3-1b mapeak/translation
-        npx wait-on -t 600000 http://localhost:5050/languages
+        # Calls the real Google API, so the GOOGLE_API_KEY repository secret has to be set.
+        docker run -d --rm --name translation -p 5050:5050 -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" mapeak/translation
+        npx wait-on -t 60000 http://localhost:5050/health
 
         translated=$(curl -fsS -X POST http://localhost:5050/translate \
           -H 'Content-Type: application/json' \

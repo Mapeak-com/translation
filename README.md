@@ -2,36 +2,43 @@
 
 The translation service behind Mapeak. It turns the free text description on a point of interest into the language the reader is using, so a Spanish description is useful to someone reading the map in Russian.
 
-It is [LTEngine](https://github.com/LibreTranslate/LTEngine) - a LibreTranslate-compatible API backed by a local LLM - with a caching nginx in front of it, in one container.
+It is a small [LibreTranslate](https://libretranslate.com)-compatible API backed by [Google Cloud Translation](https://cloud.google.com/translate), with a caching nginx in front of it, in one container.
+
+## Why Google, and not a local LLM
+
+This used to run [LTEngine](https://github.com/LibreTranslate/LTEngine) with `gemma3` on a CPU. The translations were good, but the speed wasn't: time grows with output length, so a one-line description took ~4s and a paragraph ~40s. LTEngine also serves one request at a time, so a burst of different descriptions queued up past the app's 10s timeout.
+
+Google's standard translation model returns the same paragraph in about 0.3s, with equal or better quality (it gets *cistern* right where gemma said *well*). Pricing is per character of source text; check [current prices](https://cloud.google.com/translate/pricing). Because of the cache, each text is paid for only once per target language.
 
 ## The cache is the interesting part
 
-An LLM translation costs seconds, and LTEngine serves one request at a time behind a mutex. Neither matters much here, because a translation never changes for a given source text, so nginx caches the response **keyed by the request body**:
+A translation never changes for a given source text, so nginx caches the response **keyed by the request body**:
 
 ```
-proxy_cache_key "$request_uri|$request_body";
+proxy_cache_key "google|$request_uri|$request_body";
 ```
 
-Content addressing is what makes this work against OSM data, which anyone can edit at any moment. An edit changes the text, which changes the key, so the next reader gets a fresh translation. There is no invalidation to get wrong and no change feed to subscribe to. Identical descriptions on different points - common in OSM boilerplate - collapse onto one entry for free.
+Content addressing is what makes this work against OSM data, which anyone can edit at any moment. An edit changes the text, which changes the key, so the next reader gets a fresh translation. There is no invalidation to get wrong and no change feed to subscribe to. Identical descriptions on different points - common in OSM boilerplate - collapse onto one entry for free. The `google|` prefix keeps answers cached by the old LLM backend from being served.
 
-Two directives carry most of the weight:
-
-- `proxy_cache_lock on` collapses concurrent requests for the same new text into a single call, so a burst of readers opening the same point does not queue up behind LTEngine's mutex.
-- `proxy_ignore_client_abort on` finishes and caches a translation even when the caller has given up on it. The app times out after 10s and falls back to showing the untranslated text, but the answer is warm for the next reader - so the model never has to be fast enough to fit inside the request someone is waiting on. This is what makes a large, slow, accurate model usable without a GPU.
-
-The practical effect, measured on real point of interest descriptions:
+- `proxy_cache_lock on` collapses concurrent requests for the same new text into a single Google call.
+- `proxy_ignore_client_abort on` finishes and caches a translation even when the caller has given up on it, so a call that was paid for is not thrown away.
+- Only `200` responses are cached, so a Google error or quota problem is retried on the next request.
 
 ```
-cold  2.5 - 3.0s   MISS
-warm      0.005s   HIT
+cold  ~0.3 - 0.5s  MISS
+warm    0.002s     HIT
 ```
 
 ## Running it
 
 ```bash
-docker run -d --name translation -p 5050:5050 -v translation-models:/models \
+docker run -d --name translation -p 5050:5050 \
+  -e GOOGLE_API_KEY=... \
+  -v translation-cache:/var/cache/nginx \
   ghcr.io/mapeak-com/translation:latest
 ```
+
+**Mount the cache volume.** Without a named volume, recreating the container (every deploy of `:latest`) starts with an empty cache and pays Google again for everything.
 
 The API is LibreTranslate's, so anything written against LibreTranslate works unchanged:
 
@@ -41,25 +48,28 @@ curl -X POST http://localhost:5050/translate \
   -d '{"q":"Un manantial escondido entre las rocas","source":"es","target":"ru","format":"text"}'
 ```
 
-Responses carry `X-Translation-Cache: HIT` or `MISS`, which is the quickest way to tell whether the cache is doing its job.
+Supported: `POST /translate` (JSON or form, `q` as a string or an array, `source: "auto"` with `detectedLanguage` in the response, `format` `text` or `html`) and `GET /languages`. `GET /health` is a liveness check that never calls Google.
 
-## Choosing a model
+Responses carry `X-Translation-Cache: HIT` or `MISS`, and the container logs one line per request with the cache status and timings - the quickest way to tell whether the cache is doing its job.
 
-`LTENGINE_MODEL` picks the model, which is downloaded into `/models` on first start. Keep that as a volume or every restart re-downloads it.
+### The API key
 
-| Model | RAM | Notes |
+Create the key in the Google Cloud console under **APIs & Services → Credentials**, and restrict it to the **Cloud Translation API**. Pass it only as an environment variable, never in the image or the repository.
+
+| Variable | Default | |
 | --- | --- | --- |
-| `gemma3-1b` | ~1 GB | Unusable. It mistranslates common outdoor terms. |
-| `gemma3-4b` | ~4 GB | Good English, but invents place names when translating into other languages. |
-| `gemma3-12b` | ~8 GB | **Default.** Correct proper nouns in every target. ~8s per translation on a CPU. |
-| `gemma3-27b` | ~16 GB | Better still, but slow enough that it is hard to justify over 12b. |
-
-Translation speed is bound by memory bandwidth rather than cores, so 12b is about 3x slower than 4b - the ratio of their weights. With the cache in front, that only ever costs the first reader of a given description.
+| `GOOGLE_API_KEY` | - | Required. The container exits at start without it. |
+| `GOOGLE_TIMEOUT` | `20` | Seconds to wait for Google before answering `502`. |
 
 ## What's in this repository
 
-- `Dockerfile` builds LTEngine from source, CPU-only, so one image runs on both amd64 and arm64. `LTENGINE_REF` pins the upstream commit, so rebuilding the same tag cannot quietly change how things translate. Bump it deliberately.
+- `adapter.py` translates between LibreTranslate's API and Google's Cloud Translation v2 API. Python standard library only, listening on `127.0.0.1:5051`. It has no state; caching is entirely nginx's job.
 - `nginx.conf` is the caching front described above.
-- `entrypoint.sh` runs `ltengine` on `127.0.0.1:5051`, not reachable from outside the container, and `nginx` on `5050`, the only port exposed. It exits if either dies, so a restart policy sees the failure.
-- `.github/workflows/test.yml` builds the image, translates a sentence with `gemma3-1b`, and checks that the same request comes back as a cache `HIT`.
+- `entrypoint.sh` runs the adapter and `nginx` on `5050`, the only port exposed. It exits if either dies, so a restart policy sees the failure.
+- `Dockerfile` is Debian slim with nginx and python3, and builds in seconds.
+- `.github/workflows/test.yml` builds the image, translates a sentence through the real Google API, and checks that the same request comes back as a cache `HIT`. It needs a `GOOGLE_API_KEY` repository secret.
 - `.github/workflows/docker-publish.yml` publishes `ghcr.io/mapeak-com/translation:latest` for `linux/amd64` on every push to `main`.
+
+## Switching to Google's Translation LLM
+
+Google also offers a Gemini-based *Translation LLM* model through the v3 API. It needs a project ID and a service account rather than an API key, and is billed on input and output characters. The standard model was good enough on the descriptions tested, but switching would only touch `adapter.py`. Change the `google|` prefix in the cache key at the same time, or old answers keep being served.

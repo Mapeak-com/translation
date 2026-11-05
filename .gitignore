@@ -1,6 +1,4 @@
-# Models downloaded at runtime, and the nginx cache, if either is ever bind mounted here
-models/
+# The nginx cache, if it is ever bind mounted here
 cache/
-*.gguf
 
 .DS_Store

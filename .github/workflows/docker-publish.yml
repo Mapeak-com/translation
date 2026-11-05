@@ -32,8 +32,6 @@ jobs:
           tags: ghcr.io/mapeak-com/translation:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # amd64 only, unlike the other services. This image compiles llama.cpp, which takes minutes
-          # natively and hours under QEMU - long enough to hit the 6 hour job limit. The server this
-          # runs on is amd64; to also publish arm64, add a native ubuntu-24.04-arm runner in a matrix
-          # and merge the per-arch digests with "docker buildx imagetools create" rather than emulating.
+          # amd64 only, which is what the server runs. The image is just Debian packages and a Python
+          # script now, so adding linux/arm64 (with docker/setup-qemu-action) would be cheap if needed.
           platforms: linux/amd64
