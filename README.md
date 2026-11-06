@@ -48,7 +48,7 @@ curl -X POST http://localhost:5050/translate \
   -d '{"q":"Un manantial escondido entre las rocas","source":"es","target":"ru","format":"text"}'
 ```
 
-Supported: `POST /translate` (JSON or form, `q` as a string or an array, `source: "auto"` with `detectedLanguage` in the response, `format` `text` or `html`) and `GET /languages`. `GET /health` is a liveness check that never calls Google.
+Supported: `POST /translate` (JSON or form, `q` as a string or an array, `source: "auto"` with `detectedLanguage` in the response, `format` `text` or `html`) and `GET /languages`. `GET /health` is a liveness check that never calls Google. nginx answers CORS preflights (`OPTIONS`) itself and adds `Access-Control-Allow-Origin: *`, which the app's Android web view needs.
 
 Responses carry `X-Translation-Cache: HIT` or `MISS`, and the container logs one line per request with the cache status and timings - the quickest way to tell whether the cache is doing its job.
 
